@@ -1,0 +1,4 @@
+httpx[socks]>=0.24.0
+dnspython>=2.3.0
+PySocks>=1.7.1
+rich>=13.0.0

@@ -1,0 +1,34 @@
+# System Files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and Databases
+*.log
+*.sqlite
+*.db
+cobra_results.json
+findings.json
+*.json
+
+# Environment and Config
+.env
+.venv
+env/
+venv/
+*.key
+*.pem
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Build
+build/
+dist/
+*.egg-info/
