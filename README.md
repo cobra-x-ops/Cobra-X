@@ -29,8 +29,8 @@ Cobra X is an advanced, post-exploitation framework designed for stealth, anonym
 ## 📦 Installation
 
 ```bash
-git clone https://github.com/cobra-x-ops/cobrax.git
-cd cobrax
+git clone https://github.com/cobra-x-ops/Cobra-X
+cd Cobra-X
 pip install -r requirements.txt
 ```
 
